@@ -37,8 +37,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173"
+        "http://localhost:5173"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -47,7 +46,7 @@ app.add_middleware(
 
 
 # ============================================================
-# GEMINI MODEL
+# GEMINI CHAT MODEL
 # ============================================================
 
 model = ChatGoogleGenerativeAI(
@@ -56,11 +55,10 @@ model = ChatGoogleGenerativeAI(
 
 
 # ============================================================
-# DIRECTORIES
+# UPLOAD DIRECTORY
 # ============================================================
 
 UPLOAD_DIR = Path("data/uploads")
-DEFAULT_PDF = Path("data/notes.pdf")
 
 UPLOAD_DIR.mkdir(
     parents=True,
@@ -83,13 +81,7 @@ class ChatRequest(BaseModel):
 @app.on_event("startup")
 def startup_event():
 
-    print("\n===================================")
     print("Starting DocuMind...")
-    print("===================================")
-
-    # --------------------------------------------------------
-    # Try loading existing FAISS vectorstore
-    # --------------------------------------------------------
 
     try:
 
@@ -97,103 +89,16 @@ def startup_event():
 
         if vs.vectorstore is not None:
 
-            print(
-                "Existing FAISS vectorstore loaded successfully."
-            )
+            print("Existing RAG index loaded successfully")
 
         else:
 
-            print(
-                "No existing FAISS vectorstore found."
-            )
+            print("No existing RAG index found")
 
     except Exception as e:
 
-        print(
-            "Could not load existing vectorstore:"
-        )
-
+        print("Could not load existing vectorstore:")
         print(e)
-
-
-    # --------------------------------------------------------
-    # If vectorstore doesn't exist,
-    # create it from data/notes.pdf
-    # --------------------------------------------------------
-
-    if vs.vectorstore is None:
-
-        if DEFAULT_PDF.exists():
-
-            print(
-                "\nFound default PDF:"
-            )
-
-            print(
-                DEFAULT_PDF
-            )
-
-            print(
-                "Creating FAISS vectorstore..."
-            )
-
-            try:
-
-                vs.create_vectorstore(
-                    str(DEFAULT_PDF)
-                )
-
-                if vs.vectorstore is not None:
-
-                    print(
-                        "FAISS vectorstore created successfully."
-                    )
-
-                else:
-
-                    print(
-                        "Vectorstore creation failed."
-                    )
-
-            except Exception as e:
-
-                print(
-                    "Failed to create vectorstore:"
-                )
-
-                print(e)
-
-        else:
-
-            print(
-                "\nNo default PDF found."
-            )
-
-            print(
-                "Expected:"
-            )
-
-            print(
-                DEFAULT_PDF
-            )
-
-            print(
-                "Upload a PDF from the frontend."
-            )
-
-
-    print(
-        "\nDocuMind startup complete."
-    )
-
-    print(
-        "Vectorstore ready:",
-        vs.vectorstore is not None
-    )
-
-    print(
-        "===================================\n"
-    )
 
 
 # ============================================================
@@ -209,7 +114,7 @@ def root():
 
 
 # ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.get("/health")
@@ -231,26 +136,22 @@ async def upload_pdf(
 ):
 
     # --------------------------------------------------------
-    # Check filename
+    # Validate file
     # --------------------------------------------------------
 
     if not file.filename:
 
         raise HTTPException(
             status_code=400,
-            detail="No file selected."
+            detail="No file selected"
         )
 
-
-    # --------------------------------------------------------
-    # Check PDF
-    # --------------------------------------------------------
 
     if not file.filename.lower().endswith(".pdf"):
 
         raise HTTPException(
             status_code=400,
-            detail="Only PDF files are supported."
+            detail="Only PDF files are supported"
         )
 
 
@@ -258,9 +159,7 @@ async def upload_pdf(
     # Safe filename
     # --------------------------------------------------------
 
-    filename = os.path.basename(
-        file.filename
-    )
+    filename = os.path.basename(file.filename)
 
     file_path = UPLOAD_DIR / filename
 
@@ -268,13 +167,10 @@ async def upload_pdf(
     try:
 
         # ----------------------------------------------------
-        # Save PDF
+        # Save uploaded PDF
         # ----------------------------------------------------
 
-        with open(
-            file_path,
-            "wb"
-        ) as buffer:
+        with open(file_path, "wb") as buffer:
 
             shutil.copyfileobj(
                 file.file,
@@ -282,33 +178,15 @@ async def upload_pdf(
             )
 
 
-        print(
-            f"\nPDF uploaded: {file_path}"
-        )
+        print(f"PDF saved: {file_path}")
 
 
         # ----------------------------------------------------
-        # Create FAISS vectorstore
+        # Create / rebuild FAISS vectorstore
         # ----------------------------------------------------
-
-        print(
-            "Creating FAISS vectorstore..."
-        )
 
         vs.create_vectorstore(
             str(file_path)
-        )
-
-
-        if vs.vectorstore is None:
-
-            raise Exception(
-                "Vectorstore was not created."
-            )
-
-
-        print(
-            "FAISS vectorstore ready."
         )
 
 
@@ -316,23 +194,17 @@ async def upload_pdf(
 
             "success": True,
 
-            "message":
-                "Document uploaded and indexed successfully.",
+            "message": "Document uploaded and indexed successfully",
 
-            "filename":
-                filename
+            "filename": filename
 
         }
 
 
     except Exception as e:
 
-        print(
-            "\nUpload error:"
-        )
-
+        print("Upload error:")
         print(e)
-
 
         raise HTTPException(
             status_code=500,
@@ -345,13 +217,7 @@ async def upload_pdf(
 # ============================================================
 
 @app.post("/chat")
-def chat(
-    request: ChatRequest
-):
-
-    # --------------------------------------------------------
-    # Get question
-    # --------------------------------------------------------
+def chat(request: ChatRequest):
 
     question = request.question.strip()
 
@@ -364,7 +230,7 @@ def chat(
 
         raise HTTPException(
             status_code=400,
-            detail="Question cannot be empty."
+            detail="Question cannot be empty"
         )
 
 
@@ -376,214 +242,113 @@ def chat(
 
         raise HTTPException(
             status_code=400,
-            detail=(
-                "No document is indexed. "
-                "Please upload a PDF first."
-            )
+            detail="Please upload a PDF before asking questions."
         )
 
 
-    # ========================================================
-    # RETRIEVAL
-    # ========================================================
+    # --------------------------------------------------------
+    # Retrieve relevant chunks
+    # --------------------------------------------------------
 
-    print(
-        f"\nQuestion: {question}"
-    )
+    try:
 
-    print(
-        "Searching FAISS..."
-    )
-
-
-    results = vs.vectorstore.similarity_search(
-        question,
-        k=5
-    )
-
-
-    print(
-        f"Retrieved {len(results)} chunks."
-    )
-
-
-    # ========================================================
-    # CREATE CONTEXT
-    # ========================================================
-
-    context_parts = []
-
-
-    for doc in results:
-
-        context_parts.append(
-            doc.page_content
+        results = vs.vectorstore.similarity_search(
+            question,
+            k=5
         )
 
+    except Exception as e:
+
+        print("Retrieval error:")
+        print(e)
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve relevant document information."
+        )
+
+
+    # --------------------------------------------------------
+    # Create document context
+    # --------------------------------------------------------
 
     context = "\n\n".join(
-        context_parts
+        doc.page_content
+        for doc in results
     )
 
 
-    # ========================================================
-    # PROMPT
-    # ========================================================
+    # --------------------------------------------------------
+    # Prompt
+    # --------------------------------------------------------
 
     prompt = f"""
 You are DocuMind, an AI document assistant.
 
-Your job is to answer the user's question using ONLY
-the information contained in the provided document context.
+Answer the user's question using ONLY the information
+contained in the provided document context.
 
-The user wants a useful, detailed and easy-to-understand answer.
+Give a detailed, clear and well-structured answer.
 
-IMPORTANT RULES:
+Rules:
 
-1. Use ONLY information from the document context.
+- Start with a clear direct explanation.
+- Use headings when appropriate.
+- Use bullet points for lists.
+- Use numbered lists when explaining steps.
+- Use tables when the document contains comparison information.
+- Explain technical terms in simple language.
+- Give examples only when supported by the document.
+- Do not invent information.
+- Do not use information outside the provided context.
+- Do not unnecessarily repeat information.
+- Give enough detail to properly answer the question.
+- Keep the answer focused on the user's question.
 
-2. Do NOT use outside knowledge.
+If the document does not contain enough information,
+say clearly:
 
-3. Do NOT invent facts.
+"The provided document does not contain enough information
+to answer this question."
 
-4. If the document does not contain enough information,
-   clearly say that the document does not provide enough
-   information to answer the question.
-
-5. Give a detailed answer rather than a very short answer.
-
-6. Organize the answer clearly.
-
-7. Start with a direct explanation.
-
-8. Use headings when the answer has multiple sections.
-
-9. Use bullet points for lists.
-
-10. Use numbered lists when explaining processes or steps.
-
-11. Use tables when comparing concepts and when the
-    document provides enough information.
-
-12. Explain technical concepts in simple language.
-
-13. Include examples ONLY when supported by the document.
-
-14. Do not unnecessarily repeat the same information.
-
-15. Important terms may be written in Markdown bold.
-
-16. Keep the answer readable and well structured.
-
-DOCUMENT CONTEXT
-================
+DOCUMENT CONTEXT:
 
 {context}
 
 
-USER QUESTION
-=============
+USER QUESTION:
 
 {question}
 
 
-Now answer the question using ONLY the document context.
+Now provide a detailed answer based strictly on the document.
 """
 
 
-    # ========================================================
-    # GENERATE ANSWER
-    # ========================================================
-
-    print(
-        "Sending request to Gemini..."
-    )
-
+    # --------------------------------------------------------
+    # Generate answer
+    # --------------------------------------------------------
 
     try:
 
-        response = model.invoke(
-            prompt
-        )
+        response = model.invoke(prompt)
 
         answer = response.content
 
-
-        # ----------------------------------------------------
-        # Normalize Gemini response
-        #
-        # Sometimes LangChain returns:
-        #
-        # [
-        #     {
-        #         "type": "text",
-        #         "text": "..."
-        #     }
-        # ]
-        #
-        # We convert that into a normal string.
-        # ----------------------------------------------------
-
-        if isinstance(answer, list):
-
-            text_parts = []
-
-
-            for item in answer:
-
-                if isinstance(item, dict):
-
-                    text = item.get(
-                        "text"
-                    )
-
-                    if text:
-
-                        text_parts.append(
-                            text
-                        )
-
-                elif isinstance(item, str):
-
-                    text_parts.append(
-                        item
-                    )
-
-
-            answer = "\n".join(
-                text_parts
-            )
-
-
-        # ----------------------------------------------------
-        # Final safety conversion
-        # ----------------------------------------------------
-
-        if not isinstance(answer, str):
-
-            answer = str(answer)
-
-
     except Exception as e:
 
-        print(
-            "\nGemini error:"
-        )
-
+        print("Gemini error:")
         print(e)
-
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                f"Failed to generate answer: {str(e)}"
-            )
+            detail="Failed to generate an answer."
         )
 
 
-    # ========================================================
-    # SOURCES
-    # ========================================================
+    # --------------------------------------------------------
+    # Sources
+    # --------------------------------------------------------
 
     sources = []
 
@@ -615,43 +380,27 @@ Now answer the question using ONLY the document context.
         )
 
 
-        # ----------------------------------------------------
-        # Remove duplicate sources
-        # ----------------------------------------------------
-
         if key not in seen:
 
-            seen.add(
-                key
-            )
-
+            seen.add(key)
 
             sources.append({
 
-                "page":
-                    str(page),
+                "page": page,
 
-                "source":
-                    str(source)
+                "source": source
 
             })
 
 
-    # ========================================================
-    # FINAL RESPONSE
-    # ========================================================
-
-    print(
-        "Answer generated successfully."
-    )
-
+    # --------------------------------------------------------
+    # Response
+    # --------------------------------------------------------
 
     return {
 
-        "answer":
-            answer,
+        "answer": answer,
 
-        "sources":
-            sources
+        "sources": sources
 
     }
